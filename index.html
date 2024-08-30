@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interactive Dot System</title>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+        }
+        canvas {
+            display: block;
+        }
+        #toolbar {
+            position: fixed;
+            top: 10px;
+            left: 10px;
+            background: rgba(255, 255, 255, 0.8);
+            padding: 5px;
+            border-radius: 5px;
+        }
+        .tool {
+            font-size: 24px;
+            cursor: pointer;
+            margin: 0 5px;
+        }
+    </style>
+</head>
+<body>
+    <div id="toolbar">
+        <select name="actions" id="actionSelect">
+              <option value="draw">✍️Draw</option>
+              <option value="extend">📏Extend</option>
+        </select>
+        <input type="checkbox" id="slopeCheckbox">
+        <label for="slopeCheckbox">Show Slopes</label>
+    </div>
+    <canvas id="canvas"></canvas>
+
+    <script>
+        let mode = 'draw'; // default mode
+
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const slopeCheckbox = document.getElementById('slopeCheckbox');
+
+        let mainDots = [];
+        let lines = [];
+        let clonedLines = [];
+        let lastActiveDot = null;
+        let horizontalLineY = window.innerHeight / 2;
+        let isDraggingLine = false;
+        let showSlopes = false;
+        const SLOPE_THRESHOLD = 0.1;
+        const ANGLE_THRESHOLD = 10; // in degrees
+        const COLORS = ['#FF0000', '#00FF00', '#0000FF', '#FFFF00', '#FF00FF', '#00FFFF', '#FFA500', '#800080'];
+
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        }
+
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        class Dot {
+            constructor(x, y) {
+                this.x = x;
+                this.y = y;
+            }
+
+            draw(isActive) {
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, 5, 0, Math.PI * 2);
+                ctx.fillStyle = isActive ? 'blue' : 'black';
+                ctx.fill();
+            }
+        }
+
+        class Line {
+            constructor(start, end) {
+                this.start = start;
+                this.end = end;
+                this.updateSlope();
+                this.color = 'black';
+                this.groupId = null;
+            }
+
+            updateSlope() {
+                const dx = this.end.x - this.start.x;
+                const dy = this.end.y - this.start.y;
+                this.slope = dx !== 0 ? dy / dx : Infinity;
+            }
+
+            draw() {
+                ctx.beginPath();
+                ctx.moveTo(this.start.x, this.start.y);
+                ctx.lineTo(this.end.x, this.end.y);
+                ctx.strokeStyle = this.color;
+                ctx.stroke();
+
+                if (showSlopes) {
+                    const midX = (this.start.x + this.end.x) / 2;
+                    const midY = (this.start.y + this.end.y) / 2;
+                    ctx.fillStyle = 'red';
+                    ctx.font = '12px Arial';
+                    ctx.fillText(this.slope.toFixed(2), midX, midY);
+                }
+            }
+        }
+
+        function addDot(x, y) { 
+            const newDot = new Dot(x, y);
+            if (lastActiveDot) {
+                addLine(lastActiveDot, newDot);
+            }
+            mainDots.push(newDot);
+            lastActiveDot = newDot;
+        }
+
+        function addLine(start, end) {
+            if (!lines.some(line => 
+                (line.start === start && line.end === end) || 
+                (line.start === end && line.end === start)
+            )) {
+                lines.push(new Line(start, end));
+            }
+        }
+
+        function removeDot(dot) {
+            lines = lines.filter(line => line.start !== dot && line.end !== dot);
+            mainDots = mainDots.filter(d => d !== dot);
+            if (lastActiveDot === dot) {
+                lastActiveDot = mainDots.length > 0 ? mainDots[mainDots.length - 1] : null;
+            }
+        }
+
+        function removeLine(line) {
+            lines = lines.filter(l => l !== line);
+        }
+
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            // Draw horizontal line
+            ctx.beginPath();
+            ctx.moveTo(0, horizontalLineY);
+            ctx.lineTo(canvas.width, horizontalLineY);
+            ctx.strokeStyle = 'lightgray';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+            
+            // Draw original lines
+            lines.forEach(line => line.draw());
+            
+            // Draw cloned lines
+            clonedLines.forEach(line => line.draw());
+            
+            // Draw dots
+            mainDots.forEach(dot => dot.draw(dot === lastActiveDot));
+            
+            requestAnimationFrame(draw);
+        }
+
+        function distToSegment(px, py, x1, y1, x2, y2) {
+            const dx = x2 - x1;
+            const dy = y2 - y1;
+            if (dx === 0 && dy === 0) {
+                return Math.sqrt((px-x1)**2 + (py-y1)**2);
+            }
+            const t = ((px-x1)*dx + (py-y1)*dy) / (dx*dx + dy*dy);
+            const t_clamped = Math.max(0, Math.min(1, t));
+            const x = x1 + t_clamped*dx;
+            const y = y1 + t_clamped*dy;
+            return Math.sqrt((px-x)**2 + (py-y)**2);
+        }
+
+        function findClickedLine(x, y) {
+            return lines.find(line => 
+                distToSegment(x, y, line.start.x, line.start.y, line.end.x, line.end.y) < 5
+            );
+        }
+
+        function splitLineAndAddDot(line, x, y) {
+            const newDot = new Dot(x, y);
+            mainDots.push(newDot);
+            removeLine(line);
+            addLine(line.start, newDot);
+            addLine(newDot, line.end);
+            if (lastActiveDot && lastActiveDot !== newDot) {
+                addLine(lastActiveDot, newDot);
+            }
+            lastActiveDot = newDot;
+        }
+
+        function mergeDots(dot1, dot2) {
+            const newDot = new Dot((dot1.x + dot2.x) / 2, (dot1.y + dot2.y) / 2);
+            
+            lines.forEach(line => {
+                if (line.start === dot1 || line.start === dot2) {
+                    line.start = newDot;
+                }
+                if (line.end === dot1 || line.end === dot2) {
+                    line.end = newDot;
+                }
+                line.updateSlope();
+            });
+            
+            lines = lines.filter(line => line.start !== line.end);
+            
+            removeDot(dot1);
+            removeDot(dot2);
+            
+            mainDots.push(newDot);
+            lastActiveDot = newDot;
+        }
+
+        function areSlopesSimilar(slope1, slope2) {
+            return (Math.abs(slope1 - slope2) < SLOPE_THRESHOLD) || 
+                   (Math.abs(1/slope1 - 1/slope2) < SLOPE_THRESHOLD);
+        }
+
+        function calculateAngle(line1, line2, sharedDot) {
+            let v1x, v1y, v2x, v2y;
+
+            if (line1.start === sharedDot) {
+                v1x = line1.end.x - line1.start.x;
+                v1y = line1.end.y - line1.start.y;
+            } else {
+                v1x = line1.start.x - line1.end.x;
+                v1y = line1.start.y - line1.end.y;
+            }
+
+            if (line2.start === sharedDot) {
+                v2x = line2.end.x - line2.start.x;
+                v2y = line2.end.y - line2.start.y;
+            } else {
+                v2x = line2.start.x - line2.end.x;
+                v2y = line2.start.y - line2.end.y;
+            }
+
+            const dotProduct = v1x * v2x + v1y * v2y;
+            const magnitude1 = Math.sqrt(v1x * v1x + v1y * v1y);
+            const magnitude2 = Math.sqrt(v2x * v2x + v2y * v2y);
+
+            const angle = Math.acos(dotProduct / (magnitude1 * magnitude2));
+            return angle * (180 / Math.PI);
+        }
+
+        function checkSimilarSlopes() {
+            if (!showSlopes) return;
+
+            // Reset all lines
+            lines.forEach(line => {
+                line.color = 'black';
+                line.groupId = null;
+            });
+
+            let groupId = 0;
+
+            for (let i = 0; i < lines.length; i++) {
+                const line1 = lines[i];
+                if (line1.groupId !== null) continue;
+
+                const similarLines = [line1];
+
+                for (let j = i + 1; j < lines.length; j++) {
+                    const line2 = lines[j];
+                    if (areSlopesSimilar(line1.slope, line2.slope)) {
+                        let sharedDot = null;
+                        if (line1.start === line2.start || line1.start === line2.end) {
+                            sharedDot = line1.start;
+                        } else if (line1.end === line2.start || line1.end === line2.end) {
+                            sharedDot = line1.end;
+                        }
+
+                        if (sharedDot) {
+                            const angle = calculateAngle(line1, line2, sharedDot);
+                            if (angle >= 180 - ANGLE_THRESHOLD) {
+                                similarLines.push(line2);
+                            }
+                        } else {
+                            // If lines don't share a dot, consider them similar based on slope alone
+                            similarLines.push(line2);
+                        }
+                    }
+                }
+
+                if (similarLines.length > 1) {
+                    const color = COLORS[groupId % COLORS.length];
+                    similarLines.forEach(line => {
+                        line.color = color;
+                        line.groupId = groupId;
+                    });
+                    groupId++;
+                }
+            }
+        }
+let lastClickedLine = null;
+let lastClickTime = 0;
+
+function cloneAndExtendLine(line) {
+    const dx = line.end.x - line.start.x;
+    const dy = line.end.y - line.start.y;
+    const currentLength = Math.sqrt(dx * dx + dy * dy);
+    const targetLength = canvas.width * 2;
+    const scale = targetLength / currentLength;
+
+    const midX = (line.start.x + line.end.x) / 2;
+    const midY = (line.start.y + line.end.y) / 2;
+
+    const newStart = new Dot(midX - (dx / 2), midY - (dy / 2));
+    const newEnd = new Dot(midX + (dx / 2), midY + (dy / 2));
+
+    const clonedLine = new Line(newStart, newEnd);
+    clonedLine.color = line.color;
+    clonedLine.originalLine = line;  // Reference to the original line
+
+    const startTime = Date.now();
+    const duration = 1000; // 1 second
+
+    function animate() {
+        const elapsedTime = Date.now() - startTime;
+        const progress = Math.min(elapsedTime / duration, 1);
+
+        const currentScale = 1 + (scale - 1) * progress;
+
+        clonedLine.start.x = midX - (dx / 2) * currentScale;
+        clonedLine.start.y = midY - (dy / 2) * currentScale;
+        clonedLine.end.x = midX + (dx / 2) * currentScale;
+        clonedLine.end.y = midY + (dy / 2) * currentScale;
+
+        if (progress < 1) {
+            requestAnimationFrame(animate);
+        }
+    }
+
+    clonedLines.push(clonedLine);
+    animate();
+}
+
+
+        function deleteClonedLines() {
+            clonedLines = [];
+        }
+
+        canvas.addEventListener('mousedown', (e) => {
+            if (mode === 'draw') { 
+                const x = e.clientX;
+                const y = e.clientY;
+
+                if (Math.abs(y - horizontalLineY) < 10) {
+                    isDraggingLine = true;
+                    return;
+                }
+
+                const clickedLine = findClickedLine(x, y);
+
+                if (e.button === 2) { // Right click
+                    const clickedDot = mainDots.find(dot => 
+                        Math.sqrt((dot.x - x) ** 2 + (dot.y - y) ** 2) < 10
+                    );
+
+                    if (clickedDot) {
+                        removeDot(clickedDot);
+                    } else if (clickedLine) {
+                        removeLine(clickedLine);
+                    } else {
+                        lastActiveDot = null;
+                    }
+                    e.preventDefault();
+                    return;
+                }
+
+                const clickedDot = mainDots.find(dot => 
+                    Math.sqrt((dot.x - x) ** 2 + (dot.y - y) ** 2) < 10
+                );
+
+                if (clickedDot) {
+                    if (lastActiveDot && lastActiveDot !== clickedDot) {
+                        addLine(lastActiveDot, clickedDot);
+                    }
+                    lastActiveDot = clickedDot;
+                } else if (e.button === 0) { // Left click
+                    if (clickedLine) {
+                        splitLineAndAddDot(clickedLine, x, y);
+                    } else {
+                        addDot(x, y);
+                    }
+                }
+                checkSimilarSlopes();
+            } else if (mode === 'extend') {
+                const x = e.clientX;
+                const y = e.clientY;
+                const clickedLine = findClickedLine(x, y);
+
+                if (clickedLine) {
+                    cloneAndExtendLine(clickedLine);
+                    checkSimilarSlopes();
+                }
+            }
+        });
+
+        canvas.addEventListener('mousemove', (e) => {
+        if (mode === 'draw') {
+            if (isDraggingLine) {
+                horizontalLineY = e.clientY;
+            }
+
+            if (isDragging && draggedDot) {
+                draggedDot.x = e.clientX;
+                draggedDot.y = e.clientY;
+
+                // Update slopes of connected lines
+                lines.forEach(line => {
+                    if (line.start === draggedDot || line.end === draggedDot) {
+                        line.updateSlope();
+                    }
+                });
+
+                const overlapDot = mainDots.find(dot => 
+                    dot !== draggedDot && 
+                    Math.sqrt((dot.x - draggedDot.x) ** 2 + (dot.y - draggedDot.y) ** 2) < 10
+                );
+
+                if (overlapDot) {
+                    mergeDots(draggedDot, overlapDot);
+                    isDragging = false;
+                    draggedDot = null;
+                }
+                checkSimilarSlopes();
+            }
+        }
+    });
+
+    canvas.addEventListener('mouseup', () => {
+        isDraggingLine = false;
+        isDragging = false;
+        draggedDot = null;
+        checkSimilarSlopes();
+    });
+
+    canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
+    document.addEventListener('keydown', (e) => {
+        if (e.code === 'Space') {
+            const x = Math.random() * canvas.width;
+            const y = Math.random() * canvas.height;
+            addDot(x, y);
+            checkSimilarSlopes();
+        }
+    });
+
+    let isDragging = false;
+    let draggedDot = null;
+
+    canvas.addEventListener('mousedown', (e) => {
+        if (mode === 'draw') { 
+            const x = e.clientX;
+            const y = e.clientY;
+
+            draggedDot = mainDots.find(dot => 
+                Math.sqrt((dot.x - x) ** 2 + (dot.y - y) ** 2) < 10
+            );
+
+            if (draggedDot) {
+                isDragging = true;
+            }
+        }
+    });
+
+    slopeCheckbox.addEventListener('change', (e) => {
+        showSlopes = e.target.checked;
+        checkSimilarSlopes();
+    });
+
+    document.getElementById('actionSelect').addEventListener('change', function() {
+        mode = this.value;
+        if (mode === 'draw') {
+            deleteClonedLines();
+        }
+    });
+
+    // Start the drawing loop
+    draw();
+</script>
+</body>
+</html>
